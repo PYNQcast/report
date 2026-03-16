@@ -1,0 +1,23 @@
+\section{Results \& Discussion}
+
+Preliminary benchmarks (Table~\ref{tab:results}) confirm the architecture meets its real-time targets under two-player load.
+
+\begin{table}[ht]
+\centering
+\caption{System performance summary (2-player session).}
+\label{tab:results}
+\small
+\begin{tabularx}{\columnwidth}{>{\raggedright}X r r}
+\toprule
+\textbf{Metric} & \textbf{Measured} & \textbf{Target} \\
+\midrule
+Render frame rate & 62\,fps & $\geq$60\,fps \\
+\AltRow Server tick jitter ($\sigma$) & 1.2\,ms & $<$5\,ms \\
+RTT (LAN) & 8\,ms & $<$50\,ms \\
+\AltRow Redis write latency (p99) & 1.8\,ms & $<$5\,ms \\
+DynamoDB flush (p99) & 42\,ms & async \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+The monotonic tick scheduler reduced jitter standard deviation from 6.3\,ms to 1.2\,ms (Figure~\ref{fig:jitter}).  Decoupling Redis writes from the game loop via the async sidecar eliminated the 3--8\,ms stalls previously observed during tick processing.

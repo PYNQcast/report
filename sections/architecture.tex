@@ -1,0 +1,71 @@
+\section{System Architecture}
+
+Figure~\ref{fig:arch} shows the three-layer split: FPGA fabric handles rendering, the ARM PS manages game logic and UDP networking, and the EC2 server validates and relays state.
+
+% ─── TIKZ ARCHITECTURE DIAGRAM ───────────────────
+\begin{figure}[ht]
+\centering
+\resizebox{\columnwidth}{!}{%
+\begin{tikzpicture}[
+    node distance=0.6cm and 1.0cm,
+    every node/.style={font=\scriptsize},
+    block/.style={
+        rectangle, rounded corners=3pt,
+        draw=ImperialBlue, fill=ImperialLightBlue,
+        minimum height=0.7cm, minimum width=2.0cm,
+        align=center, font=\scriptsize\bfseries
+    },
+    cloudblock/.style={
+        rectangle, rounded corners=3pt,
+        draw=ImperialBlue, fill=ImperialBlue!15,
+        minimum height=0.7cm, minimum width=2.0cm,
+        align=center, font=\scriptsize\bfseries
+    },
+    arr/.style={-{Stealth[length=4pt]}, thick, ImperialBlue!70}
+]
+
+% FPGA layer
+\node[block] (ray) {Raycaster\\(Verilog PL)};
+\node[block, right=of ray] (arm) {ARM PS\\(Python)};
+\node[block, below=0.5cm of ray] (pmod) {PMOD\\Link};
+
+% Cloud layer
+\node[cloudblock, right=1.4cm of arm] (srv) { Game\\Server};
+\node[cloudblock, right=of srv] (redis) {Redis\\Cache};
+\node[cloudblock, below=0.5cm of redis] (ddb) {DynamoDB};
+\node[cloudblock, below=0.5cm of ddb] (s3) {S3 Cold\\Store};
+
+% Arrows
+\draw[arr] (ray) -- (arm) node[midway,above]{frame buf};
+\draw[arr] (arm) -- (srv) node[midway,above]{UDP};
+\draw[arr] (srv) -- (redis) node[midway,above]{hot};
+\draw[arr] (redis) -- (ddb) node[midway,right]{warm};
+\draw[arr] (ddb) -- (s3) node[midway,right]{cold};
+\draw[arr, dashed] (pmod) -- (ray) node[midway,left]{P2P};
+
+\end{tikzpicture}
+}
+\caption{Three-layer system architecture.  Light-blue blocks run on PYNQ hardware; darker blue blocks run on AWS.}
+\label{fig:arch}
+\end{figure}
+
+\subsection{Server Pipeline}
+
+The authoritative server follows a Staged Event-Driven Architecture (SEDA) with four dedicated threads connected by lock-free queues:
+
+\begin{table}[ht]
+\centering
+\caption{SEDA thread responsibilities and target latencies.}
+\label{tab:threads}
+\small
+\begin{tabularx}{\columnwidth}{c >{\raggedright\arraybackslash}X r}
+\toprule
+\textbf{Thread} & \textbf{Role} & \textbf{Budget} \\
+\midrule
+T1 & UDP receiver / deserialiser & $<$1\,ms \\
+\AltRow T2 & 20\,Hz game-tick engine & 50\,ms \\
+T3 & State broadcaster & $<$2\,ms \\
+\AltRow T4 & Redis write-behind batcher & async \\
+\bottomrule
+\end{tabularx}
+\end{table}

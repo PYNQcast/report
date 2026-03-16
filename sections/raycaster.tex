@@ -1,0 +1,150 @@
+\section{Client Node Design}
+
+\subsection{SoC Architecture}
+
+The PYNQ-Z1 SoC integrates a dual-core ARM Cortex-A9 processing system (PS) with a programmable logic (PL) FPGA fabric on a single chip. 
+
+\vspace{0.5em}
+
+The Digital Differential Analysis (DDA) algorithm's repetitive per-column computation and fixed-point arithmetic lend themselves naturally to hardware implementation in the PL, where such operations can be executed far more efficiently than on a general-purpose CPU. 
+
+\vspace{0.5em}
+
+Custom IP blocks for the raycasting engine, HDMI pass-through, and BRAM controller were implemented in SystemVerilog and integrated into a Vivado block design alongside the necessary peripherals. The BRAM controller exposes an AXI interface to the PS, through which the map layout, player coordinates, and camera angle are written each game tick and consumed by the PL for rendering.
+
+\begin{figure}[H]
+\centering
+\resizebox{\columnwidth}{!}{%
+\begin{tikzpicture}[
+    node distance=0.8cm and 1.2cm,
+    every node/.style={font=\scriptsize},
+    block/.style={
+        rectangle, rounded corners=3pt,
+        draw=ImperialBlue, fill=ImperialLightBlue,
+        minimum height=0.7cm, minimum width=2.2cm,
+        align=center, font=\scriptsize\bfseries
+    },
+    groupbox/.style={
+        rectangle, rounded corners=5pt,
+        draw=ImperialBlue, thick,
+        fill=ImperialBlue!5,
+        inner sep=12pt
+    },
+    arr/.style={-{Stealth[length=4pt]}, thick, ImperialBlue!70},
+    biarr/.style={Stealth[length=4pt]-Stealth[length=4pt], thick, ImperialBlue!70}
+]
+
+% PL nodes
+\node[block] (ray)  {Raycaster IP\\(DDA Engine)};
+\node[block, below=of ray] (hdmi) {HDMI\\Controller};
+\node[block, right=1.4cm of ray] (bram) {BRAM};
+
+% PS nodes
+\node[block, right=2.8cm of bram] (game) {Game Loop\\(Python)};
+\node[block, below=of game] (gpio) {AXI GPIO\\(Buttons)};
+
+% Bounding boxes on background layer so blocks render on top
+\begin{pgfonlayer}{background}
+    \node[groupbox, fit=(ray)(hdmi)(bram)] (pl) {};
+    \node[groupbox, fit=(game)(gpio)] (ps) {};
+\end{pgfonlayer}
+
+% Labels drawn separately above each box
+\node[above=2pt of pl, font=\small\bfseries\color{ImperialBlue}] {PL (FPGA Fabric)};
+\node[above=2pt of ps, font=\small\bfseries\color{ImperialBlue}] {PS (ARM Cortex-A9)};
+
+% Arrows
+\draw[arr] (game) -- (bram) node[midway, above]{\tiny AXI};
+\draw[arr] (bram) -- (ray)  node[midway, above]{\tiny Read};
+\draw[arr] (ray)  -- (hdmi) node[midway, left]{\tiny Pixels};
+\draw[arr] (gpio) -- (game) node[midway, right]{\tiny BTN0--3};
+
+\end{tikzpicture}
+}
+\caption{PYNQ-Z1 SoC Architecture}
+\label{fig:soc-arch}
+\end{figure}
+
+Existing IP blocks were used for the buttons to be used as input. Once the input is received, calculations are done on the PS to determine the new player position, these are written to the BRAM for rendering new frames and also sent to AWS to update the game state.
+
+\subsection{Raycasting Engine Design}
+
+The rendering pipeline is implemented entirely in synthesisable SystemVerilog, producing one column per clock cycle after an initial fill latency.  Key parameters are summarised in Table~\ref{tab:rayparams}.
+
+\begin{table}[ht]
+\centering
+\caption{Raycaster pipeline parameters.}
+\label{tab:rayparams}
+\small
+\begin{tabularx}{\columnwidth}{>{\raggedright}X r}
+\toprule
+\textbf{Parameter} & \textbf{Value} \\
+\midrule
+Resolution & 320$\times$240 \\
+\AltRow Ray steps (max) & 64 \\
+Map grid & 16$\times$16 \\
+\AltRow Texture depth & 8-bit indexed \\
+Clock target & 100\,MHz \\
+\AltRow Frame rate & $\geq$60\,fps \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+The raycasting engine uses the DDA algorithm to find the distance to the closest wall. For each vertical screen column, a ray is cast from the player's position in the direction determined by the camera plane. 
+
+\vspace{0.5em}
+
+As shown in Figure~\ref{fig:ray-miss}, stepping along the ray at fixed increments risks skipping over walls. Instead, DDA jumps from one grid boundary to the next by computing the distance to the nearest horizontal and vertical tile edge, advancing to the closer edge and repeating the process until it reaching a wall (Figure~\ref{fig:ray-hit}).
+
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.5\linewidth]{images/ddaMissedWall.png}
+    \caption{Non-DDA Ray Projection}
+    \label{fig:ray-miss}
+\end{figure}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.5\linewidth]{images/ddaWallHit.png}
+    \caption{DDA Ray Projection}
+    \label{fig:ray-hit}
+\end{figure}
+
+\vspace{0.5em}
+
+Once a wall tile is detected, the perpendicular distance of the wall to the camera plane is calculated using the formula:
+\[perpWallDist = (sideDistx - deltaDistX)\]
+this is illustrated in Figure~\ref{fig:dist-calc}.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.5\linewidth]{images/distancecalc.png}
+    \caption{Perpendicular Distance Calculation}
+    \label{fig:dist-calc}
+\end{figure}
+
+With $perpWallDist$, the column height $L$ on the screen is calculated using the formula:
+\[L = h/perpWallDist\]
+Where $h$ is the height of the screen in pixels (240).
+
+More distant walls produce shorter columns — naturally encoding perspective.
+
+
+
+
+\subsection{Sprite and Texture Rendering}
+
+
+
+\subsection{Pipeline Stages}
+
+The raycaster executes as a free-running pipeline with no stalls under normal operation:
+
+\begin{keyequation}
+\[
+t_{\text{col}} = \frac{\text{ray\_steps}_{\max}}{\text{f}_{\text{clk}}} = \frac{64}{100\times10^{6}} = 0.64\;\mu\text{s}
+\]
+\end{keyequation}
+
+At 320 columns per frame this gives a theoretical frame time of $\sim$205\,$\mu$s, well within a 60\,fps budget (16.7\,ms).

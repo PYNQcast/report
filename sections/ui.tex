@@ -1,0 +1,82 @@
+\subsection{UI Overlay}
+
+Rather than hard-coding a fixed HUD, the overlay is exposed as a
+general-purpose compositing layer. This was a deliberate design choice to
+position the system as a reusable game engine rather than a
+single-game raycaster. Any application layer can define its own
+screen regions as the hardware enforces no assumptions about what is
+drawn where.
+
+\vspace{0.5em}
+
+The overlay pipeline inserts itself in the AXI-Stream between the
+raycaster output and the HDMI encoder. At each pixel clock cycle it
+receives the current beam coordinates $(x, y)$ from the video timing
+controller and selects the output colour according to a strict
+priority hierarchy:
+
+\begin{keyequation}
+\[
+\text{pixel}_{\text{out}} =
+\begin{cases}
+C_{\text{sprite}}(x,y) & \text{if } (x,y) \in R_{\text{sprite}} \\
+C_{\text{glyph}}(x,y)  & \text{if } (x,y) \in R_{\text{text}}   \\
+C_{\text{bar}}         & \text{if } (x,y) \in R_{\text{bar}}    \\
+C_{\text{ray}}(x,y)    & \text{otherwise}
+\end{cases}
+\]
+\end{keyequation}
+
+Each region $R$ is defined by a pair of axis-aligned bounding boxes
+written to AXI-Lite registers by the PS at startup. Because the
+decision resolves in a single clock cycle, with no memory transactions
+on the critical path, the overlay adds \textbf{zero pipeline stages}
+and consumes no additional BRAM beyond the glyph ROM.
+
+\vspace{0.5em}
+
+Text rendering uses a $760 \times 8$ BRAM-backed glyph ROM covering
+the full 95-character printable ASCII set. For a character at grid
+position $(c_x, c_y)$ the ROM address is:
+
+\begin{keyequation}
+\[
+\text{addr} = \bigl(\text{ASCII}(c) - 32\bigr) \times 8
+              + \bigl(y - c_y \cdot 8\bigr)
+\]
+\end{keyequation}
+
+and the pixel colour is gated by bit $\bigl(x - c_x \cdot 8\bigr)$
+of the returned byte, giving a 1-cycle-per-pixel throughput with no
+stalls.
+
+\vspace{0.5em}
+
+A proof-of-concept sprite layer was implemented alongside the text
+renderer to validate the extension path: a $16 \times 16$ icon is
+loaded into a dedicated BRAM region at boot and composited at a
+PS-configurable screen coordinate. The same mechanism generalises to
+arbitrary sprite sheets where a wider AXI-Lite register map could expose
+multiple independently-positioned sprites at runtime without modifying
+the core pipeline.
+
+\begin{figure}[H]
+    \centering
+    % TODO: screenshot of game running with HUD overlaid, or pipeline
+    % block diagram showing pixel-mux between raycaster / glyph ROM /
+    % bar logic / sprite BRAM
+    \fbox{\parbox{0.85\columnwidth}{\centering\vspace{2em}
+        \textit{[Figure placeholder: annotated screenshot showing an example UI]}
+    \vspace{2em}}}
+    \caption{UI overlay: pixel-clock-domain compositing over raycasted frame.}
+    \label{fig:ui-overlay}
+\end{figure}
+
+\paragraph{Resource cost:}
+The entire overlay (region comparators, glyph ROM, sprite BRAM, and
+pixel mux) consumes ~180 LUTs and 1 BRAM tile
+(36\,Kb). This is substantially cheaper than a software alternative:
+blitting a $320 \times 240$ framebuffer from the PS would transfer
+$\sim$75\,kB per frame, consuming $\sim$36\,MB/s of AXI bandwidth at
+60\,fps and competing directly with the network and game-loop threads.
+The PL overlay eliminates that cost entirely.

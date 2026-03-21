@@ -137,7 +137,7 @@
 % =================================================
 \pagestyle{fancy}
 \fancyhf{}
-\lhead{\includegraphics[height=0.4cm]{images/Imperial-Logo.png}}
+\lhead{\includegraphics[height=0.3cm]{images/Imperial-Logo.png}}
 \rhead{\raisebox{-4pt}{\includegraphics[height=0.7cm]{images/PYNQcast_logo.png}}}
 \cfoot{\small\color{MidGrey}\thepage}
 \renewcommand{\headrulewidth}{0pt}

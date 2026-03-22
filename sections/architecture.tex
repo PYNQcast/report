@@ -1,12 +1,27 @@
 
-\section{Architecture}
+\section{System Architecture \& Overview}
+\label{sec:overview}
 
-write about architecture with diagrams/ interfacing
+PYNQcast is built across two or more PYNQ-Z1 FPGA nodes and an AWS 
+EC2 server (Figure~\ref{fig:top-level}). Each node's programmable logic (PL) runs a 
+hardware Digital Differential Analyser (DDA) raycasting engine outputting directly to HDMI; the processing system (PS) handles button input, computes player position and camera angle, and 
+synchronises state with the server over UDP. A shared BRAM bridges 
+the PS/PL boundary. The EC2 server is authoritative for all game 
+state; resolving collisions, broadcasting unified state back to 
+nodes each tick, and exposing a browser-based development environment 
+for map editing, session management, and match replays.
 
-
-\begin{figure*}[t]
+\begin{figure}[H]
     \centering
-    \includegraphics[width=\textwidth]{images/Main_architecture.png}
-    \caption{Perpendicular Distance Calculation}
-    \label{fig:dist-calc}
-\end{figure*}
+    \vspace{-0.8em}
+    \includegraphics[width=\columnwidth]{images/Main_architecture.png}
+    \caption{Top-level system architecture.}
+    \label{fig:top-level}
+\end{figure}
+
+% \begin{figure*}[t]
+%     \centering
+%     \includegraphics[width=\textwidth]{images/Main_architecture.png}
+%     \caption{Top Level Architecture Diagram}
+%     \label{fig:top-level}
+% \end{figure*}

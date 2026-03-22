@@ -2,272 +2,311 @@
 
 \subsection{SoC Architecture}
 
-somethings about FPGA fabric maybe
+The PYNQ-Z1 is built around the PYNQ-Z1 SoC, coupling a dual-core ARM Cortex-A9 PS with Zynq-7000 FPGA fabric in the PL. A DDA raycasting engine runs on the PL, exploiting the parallelism of FPGA fabric for per-column ray computation, while a Python game script runs on the PS, handling player input, game state, and network communication with the game server.
 
 \vspace{0.5em}
 
-The Digital Differential Analysis (DDA) algorithm's repetitive per-column computation and fixed-point arithmetic lend themselves naturally to hardware implementation in the PL, where such operations can be executed far more efficiently than on a general-purpose CPU. 
+The PS/PL boundary is bridged via a shared BRAM, exposed to the PS through an AXI interconnect. Each game tick, the PS writes the player coordinates, camera angle, and remote player position into BRAM; the PL consumes these and the map layout each frame to drive the raycasting engine. Player input is handled via an AXI GPIO peripheral mapped to the four onboard buttons.
 
-\vspace{0.5em}
-
-Custom IP blocks for the raycasting engine, HDMI pass-through, and BRAM controller were implemented in SystemVerilog and integrated into a Vivado block design alongside the necessary peripherals. The BRAM controller exposes an AXI interface to the PS, through which the map layout, player coordinates, and camera angle are written each game tick and consumed by the PL for rendering. HERE IS AN EXMAPLE DIAGRAM - WE MAY USE OUR OWN - BETTER IF WE DO TBH WITH ALL OUR OWN BLOCKS 
-
-\begin{figure}[H]
-\centering
-\resizebox{\columnwidth}{!}{%
-\begin{tikzpicture}[
-    node distance=0.8cm and 1.2cm,
-    every node/.style={font=\scriptsize},
-    block/.style={
-        rectangle, rounded corners=3pt,
-        draw=ImperialBlue, fill=ImperialLightBlue,
-        minimum height=0.7cm, minimum width=2.2cm,
-        align=center, font=\scriptsize\bfseries
-    },
-    groupbox/.style={
-        rectangle, rounded corners=5pt,
-        draw=ImperialBlue, thick,
-        fill=ImperialBlue!5,
-        inner sep=12pt
-    },
-    arr/.style={-{Stealth[length=4pt]}, thick, ImperialBlue!70},
-    biarr/.style={Stealth[length=4pt]-Stealth[length=4pt], thick, ImperialBlue!70}
-]
-
-% PL nodes
-\node[block] (ray)  {Raycaster IP\\(DDA Engine)};
-\node[block, below=of ray] (hdmi) {HDMI\\Controller};
-\node[block, right=1.4cm of ray] (bram) {BRAM};
-
-% PS nodes
-\node[block, right=2.8cm of bram] (game) {Game Loop\\(Python)};
-\node[block, below=of game] (gpio) {AXI GPIO\\(Buttons)};
-
-% Bounding boxes on background layer so blocks render on top
-\begin{pgfonlayer}{background}
-    \node[groupbox, fit=(ray)(hdmi)(bram)] (pl) {};
-    \node[groupbox, fit=(game)(gpio)] (ps) {};
-\end{pgfonlayer}
-
-% Labels drawn separately above each box
-\node[above=2pt of pl, font=\small\bfseries\color{ImperialBlue}] {PL (FPGA Fabric)};
-\node[above=2pt of ps, font=\small\bfseries\color{ImperialBlue}] {PS (ARM Cortex-A9)};
-
-% Arrows
-\draw[arr] (game) -- (bram) node[midway, above]{\tiny AXI};
-\draw[arr] (bram) -- (ray)  node[midway, above]{\tiny Read};
-\draw[arr] (ray)  -- (hdmi) node[midway, left]{\tiny Pixels};
-\draw[arr] (gpio) -- (game) node[midway, right]{\tiny BTN0--3};
-
-\end{tikzpicture}
-}
-\caption{PYNQ-Z1 SoC Architecture}
-\label{fig:soc-arch}
+\begin{figure}[h!]
+    \centering
+    \vspace{-1em}
+    \includegraphics[width=0.9\linewidth]{images/image.png}
+    \caption{Client Node Architecture}
+    \label{fig:soC}
 \end{figure}
 
-\subsection{Raycasting Engine Design}
 
-Maybe some raycaster PARAMTERS IN A TABLE MAY BE NICE- TABLES ARE GOOD 
+\subsection{FPGA Rendering Pipeline}
 
-\begin{table}[ht]
-\centering
-\caption{Raycaster pipeline parameters.}
-\label{tab:rayparams}
-\small
-\begin{tabularx}{\columnwidth}{>{\raggedright}X r}
-\toprule
-\textbf{Parameter} & \textbf{Value} \\
-\midrule
-Resolution & 320$\times$240 \\
-\AltRow Ray steps (max) & 64 \\
-Map grid & 16$\times$16 \\
-\AltRow Texture depth & 8-bit indexed \\
-Clock target & 100\,MHz \\
-\AltRow Frame rate & $\geq$60\,fps \\
-\bottomrule
-\end{tabularx}
-\end{table}
-
-
-
-
-The raycasting engine uses player position, angle and map data stored in the shared BRAM, to then run the DDA algorithm to find the distance to the closest wall. For each vertical screen column, a ray is cast from the player's position in the direction determined by the camera plane. 
-
-\vspace{0.5em}
-
-As shown in Figure~\ref{fig:ray-miss}, stepping along the ray at fixed increments risks skipping over walls. Instead, DDA jumps from one grid boundary to the next by computing the distance to the nearest horizontal and vertical tile edge, advancing to the closer edge and repeating the process until it reaching a wall (Figure~\ref{fig:ray-hit}).
-
+\subsubsection{DDA Algorithm Overview}
+As shown in Figure~\ref{fig:ray-comparison}, stepping along a ray at 
+fixed increments risks skipping over walls. DDA instead jumps from one 
+grid boundary to the next, advancing to the nearest horizontal or 
+vertical tile edge until a wall is hit~\cite{dda}. The algorithm relies 
+heavily on trigonometric and reciprocal functions --- the primary target 
+for hardware acceleration in the PL implementation.
 
 \begin{figure}[H]
     \centering
-    \includegraphics[width=0.5\linewidth]{images/ddaMissedWall.png}
-    \caption{Non-DDA Ray Projection}
-    \label{fig:ray-miss}
+    \begin{subfigure}{0.45\linewidth}
+        \centering
+        \includegraphics[width=\linewidth]{images/ddaMissedWall.png}
+        \caption{Non-DDA projection}
+        \label{fig:ray-miss}
+    \end{subfigure}
+    \hfill
+    \begin{subfigure}{0.45\linewidth}
+        \centering
+        \includegraphics[width=\linewidth]{images/ddaWallHit.png}
+        \caption{DDA projection}
+        \label{fig:ray-hit}
+    \end{subfigure}
+    \caption{Ray projection comparison.}
+    \label{fig:ray-comparison}
 \end{figure}
 
-\begin{figure}[H]
-    \centering
-    \includegraphics[width=0.5\linewidth]{images/ddaWallHit.png}
-    \caption{DDA Ray Projection}
-    \label{fig:ray-hit}
-\end{figure}
+\subsubsection{Design Philosophy}
+To create the illusion of continuous movement, the renderer must sustain a frame rate at which individual frames are imperceptible --- conventionally 60 FPS. The raycasting engine is designed to meet and exceed this threshold to render frames from BRAM as fast as possible.
 
-\vspace{0.5em}
+This abstraction between the PL and PS in driving the display like this also benefited when adding features like game replay where now the position data was streamed from the server allowing the raycaster design to stay constant.
 
-Once a wall tile is detected, the perpendicular distance of the wall to the camera plane is calculated using the formula:
-\[perpWallDist = (sideDistx - deltaDistX)\]
-this is illustrated in Figure~\ref{fig:dist-calc}.
+\subsubsection{Raycasting Engine Inputs}
+The raycaster requires the values of 4 states to properly render a frame:
 
-\begin{figure}[H]
-    \centering
-    \includegraphics[width=0.5\linewidth]{images/distancecalc.png}
-    \caption{Perpendicular Distance Calculation}
-    \label{fig:dist-calc}
-\end{figure}
-
-With $perpWallDist$, the column height $L$ on the screen is calculated using the formula:
-\[L = h/perpWallDist\]
-Where $h$ is the height of the screen in pixels (240).
-
-More distant walls produce shorter columns — naturally encoding perspective.
-
-\subsubsection{How the raycaster is controlled}
-The raycaster needs 4 things from the PS to render a specific image.
 \begin{itemize}
-    \item 32x32 map, stored in the first 32 addresses of the BRAM as 32 bit words, where each bit represents a 'walled' cell (1), or an open cell (0).
-    \item In the next address the player's coordinates within the 32x32 bit map are held, with the X coord the most significant 16 bits, and the y coord the leats significant 16 bits (both in Q6.10 format).
-    \item Next address stores the angle the player is facing in the least significant 12 bits, where this 12 bit angle value maps to a full rotation - this is a particularly easy way of doing angles as the wraparound nature of addition correctly expresses the wrap around nature of the angles.
-    \item Next address stores prite coordinates (usually representing the other player) once again x coords in the most significant 16 and y coords in the least significant.
+    \item A $32\times32$ bit map: stored in the first 32 addresses of the BRAM as 32 bit words, where each bit represents a 'walled' cell (1), or an open cell (0).
+    \item The player coordinates: these are represented in a 32 bit word, the most significant 16 bits correspond to the $X$ coordinate and the least significant bits represent the $Y$ coordinate - both in Q6.10.
+    \item The player viewing angle: Encoded using Binary Angle Measurement (BAM), where \texttt{0xFFFFFFFF} represents $360°$ and \texttt{0x00000000} represents $0°$. This is beneficial as natural integer overflow perfectly emulates a full rotation, eliminating explicit wraparound logic in hardware.
+    \item Sprite coordinates: This can represent another player or object, the sprite coordinates use the same format as the user coordinates.
 \end{itemize}
+
+
+% \subsubsection{Block Diagram Setup}
+
+% A BRAM generator block is used as the shared BRAM module (instantiated as True Dual Port RAM). A BRAM controller block is used to simplify the interfacing with the PS, and the raycaster block wires combinationally into port B. Both ports can be accessed by blocks with different clock-speeds, so this acts as the crucial decoupler between the PS, the raycaster and HDMI block (restriced at 50MHz).
+
+% \begin{figure}[H]
+%     \centering
+%     \includegraphics[width=0.8\linewidth]{images/bram.png}
+%     \caption{BRAM setup and interfacing on block diagram.}
+%     \label{fig:yourlabel}
+% \end{figure}
 
 
 \subsubsection{Implementation in hardware}
-The general process was mapping the C++ software raycaster provided in \href{https://lodev.org/cgtutor/raycasting.html}{this online graphics guide}, into digital logic using verilog. To do this i developed my \href{https://lucid.app/lucidchart/b7ab8f69-34e7-4cf8-9b9b-f49715732eff/edit?viewport_loc=-2031%2C-77%2C6192%2C3343%2CYexzRyfn2-1H&invitationId=inv_7309e510-de33-44a8-bcfb-b6b6e7498bd5}{own flowchart} of the raycasting algorithm and converted sections into verilog.
-The main difficulty of this was the arithmetic in the DDA raycasting algorithm. We wanted to engineer it for:
-\begin{itemize}
-    \item Low Latency
-    \item Low resource utilisation
-    \item Low power
-    \item Parallelism
-    \item Precision
-\end{itemize}
-To best leverage the FPGA's resources custom fixed point arithmetic was used, this was effective as it could be done combinationally and to an acceptable precision. Of course with fixed point there is a limit in precision, we therefore specially selected fixed point representations for different values, customising them so to give them the finest resolution, in the ranges they could physically represent, we kept bit widths at 16 bits to minimise multiplier + adder usage where necessary. 
-For example:
-\begin{itemize}
-    \item Unsigned Q6.10 for distances and coordinates. In the 32x32 map the max distance (corner to corner) is approx. 45 the 6 integer bits can represent this magnitude, but also have 10 bits of fractional precision.
-    \item Direction Vectors : Two's compliment Q2.14. When representing the direction the viewer is facing we intepret it as a unit vector, a unit vector we must find the x component and y component of. These components can be between -1 and 1, and need high precision to accuratelt represent the direction of the unit vector.
-\end{itemize}
+% The general process was mapping  \href{https://lodev.org/cgtutor/raycasting.html}{Lode Vandevenne's C++ raycasting 
+% tutorial}, into digital logic using verilog. To do this we developed our \href{https://lucid.app/lucidchart/b7ab8f69-34e7-4cf8-9b9b-f49715732eff/edit?viewport_loc=-2031%2C-77%2C6192%2C3343%2CYexzRyfn2-1H&invitationId=inv_7309e510-de33-44a8-bcfb-b6b6e7498bd5}{own flowchart} of the raycasting algorithm and converted sections into verilog.
 
-For more complex functions such as $sin(x)$, $cos(x)$ and divisions (to find column height or the $1/|dirx|$)- which are particularly difficult to do fast with minimal resources in digital logic, we had to find better ways to maximise speed and minimise latency, without a noticeable worsening of precision.
+% \begin{figure}[H]
+%     \centering
+%     \includegraphics[width=0.8\linewidth]{images/dda_flow.png}
+%     \caption{Section of \href{https://lucid.app/lucidchart/b7ab8f69-34e7-4cf8-9b9b-f49715732eff/edit?viewport\_loc=-2031\%2C-77\%2C6192\%2C3343\%2CYexzRyfn2-1H\&invitationId=inv\_7309e510-de33-44a8-bcfb-b6b6e7498bd5}{DDA flowchart} used to develop digital logic.}
+%     \label{fig:yourlabel}
+% \end{figure}
 
-For these functions we settles on using LUTs, we chose these for a few reasons:
+The principal implementation challenge was mapping the DDA arithmetic into synthesisable fixed-point logic. Each signal's value range was analysed independently to select the optimal representation — for example, unsigned Q6.10 for distances and coordinates (covering the $32\times32$ map's maximum diagonal of $\approx45$ units with 10 bits of fractional precision) and two's complement Q2.14 for unit direction vectors (maximising precision over $[-1,1]$). Bit widths were constrained to 16 bits throughout to minimise DSP and adder usage, keeping all arithmetic combinatorial.
+
+For more complex functions such as $\sin(x)$, $\cos(x)$ and divisions, these computations are expensive to implement in hardware while maintaining precision and speed.
+
+Look-up tables (LUTs) were used instead for the following considerations:
+
 \begin{itemize}
-    \item Low latency, can also pipeline, we wanted to make sure the raycaster didnt limit frame-rate
-    \item Mapped into BRAM or LUTS, at this stage in the project we wanted to minimise DSP usage and general resource utilisation to leave space for new features as the raycaster develops.
-    \item Luts mean you can pick your precision on both ends we spent time calculating how much precision we would need for the input and outputs and their uses down the line, so that we could minimise the sizes of the LUTS.
+    \item Low latency: LUTs provide single-cycle lookup access, whereas hardware division via DSPs typically requires multi-cycle iterative computation (e.g. 20+ cycles for a 32-bit divider), introducing pipeline stalls in a per-column rendering loop.
+    \item Resource Utilisation: The values were being stored in LUTs or BRAM which allows the DSP slices to be conserved if future compute demand was needed for any additional features.
+    \item Deisgn Freedom: LUTs mean you can pick your precision on both ends we spent time calculating how much precision we would need for the input and outputs and their uses down the line, so that we could minimise the sizes of the LUTs.
 \end{itemize}
-These LUTs would be generates as .mem files using python scripts and would then be loaded into arrays in verilog using the \texttt{$readmemh} instruction.
+These LUTs would be generated as \texttt{\texttt{.mem}} files using Python scripts and would then be loaded into arrays in Verilog using the \texttt{\$readmemh} instruction.
 
 \subsubsection{AXI Video stream output block \& pixel generation}
 
-Whenever the distance of a ray is calculated it indexes the 240/distance LUT to find how tall the wall in the corresponding column should be, a pulse is sent to the hdmi pixel gen block so that knows to store this height in its array of column heights.
+Whenever the distance of a ray is calculated it indexes the $\frac{240}{distance}$ LUT to compute the wall height in the corresponding column. A pulse is sent to the HDMI pixel gen block so that knows to store this height in its array of column heights.
 
-In the next frame the hdmi pixel gen block copies these values into its 'current heights' array, then as it is generating outputing pixels, we keep a track of the x and y coordinates of the current pixel. Which we can then use determine which column on the screen we are in - how tall the wall is here, whether we are in the wall, above it, or below it which we can then use to decide which pixel to output.
+At the start of each frame, the pixel generation block latches the column heights array. As pixels are output sequentially, the current screen coordinates determine which column is active, its wall height, and therefore whether the current pixel lies within the wall, above it (ceiling), or below it (floor), selecting the appropriate pixel value accordingly.
 
-We also coded the hdmi pixel gen block to handles all the AXI signals for this video data stream: 
-\begin{itemize}
-    \item TDATA
-    \item DVALID
-    \item TUSER
-    \item TLAST
-    \item TREADY
-\end{itemize}
+% \begin{figure}[H]
+%     \centering
+%     \includegraphics[width=0.8\linewidth]{images/HDMI_conn.png}
+%     \caption{AXI-stream into custom HDMI block.}
+%     \label{fig:yourlabel}
+% \end{figure}
 
+The AXI stream feeds directly into the custom HDMI interface block, driving the monitor without requiring a pixel buffer, avoiding the significant FF resource cost this would incur.
 
+% \subsubsection{Note on clock domains:}
 
+% The raycaster and HDMI block are clocked by the 50MHz clock used at the output for the HDMI, but the rest of the overlay uses the PYNQ system clock. This means that the BRAM acts as the decoupling between the two different clock speeds on the board.
 
 \subsection{Extension 1: Sprite Rendering}
-
-Fully customiseable sprite and texture loading, can change the relevant .mem files containing the sprite bitmap to renderdifferent sprites/wall textures.
-
-
+Sprites and wall textures are fully customisable by replacing the relevant \texttt{.mem} files. Sprite rendering proceeds in five stages:
 \begin{enumerate}
-    \item During wall raycasting, record the perpendicular distance of each vertical stripe in a 1D Z-buffer.
-    \item Project each sprite onto the camera plane by subtracting the player position from the sprite position, then multiplying by the inverse of the 2$\times$2 camera matrix.
-    \item Determine the on-screen size of the sprite in both axes using its perpendicular distance.
-    \item Render the sprite column by column, skipping any column whose depth exceeds the corresponding Z-buffer entry from the wall pass.
-    \item Within each column, render pixel by pixel using a transparent colour key, ensuring sprites are not drawn as solid rectangles.
+    \item Record the perpendicular wall distance for each vertical stripe in a 1D Z-buffer during the wall pass.
+    \item Project each sprite onto the camera plane by subtracting the player position and multiplying by the inverse camera matrix.
+    \item Determine on-screen sprite dimensions from its perpendicular distance.
+    \item Render column by column, discarding any column occluded by the Z-buffer.
+    \item Within each column, apply a transparent colour key to avoid rendering sprites as solid rectangles.
 \end{enumerate}
+Sprite casting runs in parallel with wall raycasting but over a longer window, allowing multi-cycle dividers to be used for camera transformations without impacting throughput. Sprites are stored as $16\times16$ 12-bit RGB bitmaps with a transparency mask, enabling non-rectangular sprite shapes.
 
-The sprite casting happens in parallel as the raycasting (taking significantly more time). It therefore has more time and uses multi-cycle dividers for the camera transformations.
-
-The sprites are stored as 16x16 12 bit rgb bit maps, they also have invisible pixels where the raycaster will instead display the pixels from the wall/floor/ceiling behind, meaning different shaped sprites can be rendered.
+\begin{figure}[h]
+    \centering
+    \begin{subfigure}{0.48\linewidth}
+        \centering
+        \includegraphics[width=\linewidth]{images/simple_sprite.png}
+        \caption{Step 1 : Correctly rendering a square sprite in environment (with occlusion)}
+        \label{fig:tex_sampling}
+    \end{subfigure}
+    \hfill
+    \begin{subfigure}{0.48\linewidth}
+        \centering
+        \includegraphics[width=\linewidth]{images/bitmapped_sprite.png}
+        \caption{Step 2 : Rendering sprite bitmaps correctly - in this case a Pac-Man-style ghost}
+        \label{fig:tex_format}
+    \end{subfigure}
+    \caption{Sprite rendering - key visual compenents}
+    \label{fig:textures}
+\end{figure}
 
 \subsection{Extension 2 : Texture Rendering}
-The textured raycaster shares the same core logic as the untextured version, with a key additions: 
-when in a wall it must know both its position in the y and x direction on that wall to then sample the correct part of the texture map.
+Texture rendering extends the core raycasting pipeline with wall-surface 
+sampling. The $X$ position within a wall is recorded at the end of DDA 
+stepping; the $Y$ position is resolved via a reciprocal LUT lookup to 
+determine the fractional depth within the wall column. Together these 
+index a $32\times32$ 12-bit RGB bitmap --- stored at reduced bit-width 
+to save area --- which is zero-extended to 24-bit for output.
 
-The Xposition in the wall can be saved at the end of the DDA stepping, the y position requires a division to calculate how far through the walls column you are, and hence which rgb pixel to sample.
-
-The bitmaps are 32x32 12bit (to save area) rgb which is then 0-extended to 24bit rgb pixels.
-
-
-
+\begin{figure}[h]
+    \centering
+    \begin{subfigure}[t]{0.48\linewidth}
+        \centering
+        \includegraphics[width=\linewidth]{images/smile_texture.png}
+        \caption{Simple smiley face bitmap.}
+        \label{fig:tex_sampling}
+    \end{subfigure}
+    \hfill
+    \begin{subfigure}[t]{0.48\linewidth}
+        \centering
+        \includegraphics[width=\linewidth]{images/adil_texture.png}
+        \caption{Picture of group member Adil to showcase complex image texture rendering.}
+        \label{fig:tex_format}
+    \end{subfigure}
+    \caption{Texture mapping: loading different textures.}
+    \label{fig:textures}
+\end{figure}
 
 \subsection{Testing}
-Testing was done throughout the development of the raycaster - important modules had testbenches developed to assess them.
+Tests were designed and done throughout the development of the raycaster.
 
-Another very useful testing strategy was the testbench for the whole raycaster, which when simulating could store pixel data into a file, which a python script could then reshape into 640x480 PNG files. This was a very effective way of testing as it visualised issues clearly, and was significantly quicker than running bitstreams, and didnt require any periphers (eg monitor).
+Once a first prototype of the raycaster was written in SystemVerilog, a Python script was used to print the frames, this allowed for instantaneous feedback instead of repeated time-intensive synthesis and bitstream generations on Vivado.
 
-For more complicated testing relating to bugs in arithmetic, viewer wires/outputs would be made on the module so that we could observe different variables values through time on the waveform, this wnabled rapid identification of issues. This is why you will also see loads of \textit{'v\_'} wires on the raycaster modules, they indicate viewer wires, they have been left as when unconnected vivado simply removes them in its optimisation step.
+For effective debugging, viewer wires exposed the crucial signals through to the top level. This allowed use of the waveform viewer as another visual check of the correctness of any signals propagating through the pipeline. 
 
+% \begin{figure}[h]
+%     \centering
+%     \begin{subfigure}{0.48\linewidth}
+%         \centering
+%         \includegraphics[width=\linewidth]{images/test_waveform.png}
+%         \caption{Screenshot of the viewer wires on the waveform diagram - used to debug.}
+%         \label{fig:tex_sampling}
+%     \end{subfigure}
+%     \hfill
+%     \begin{subfigure}{0.48\linewidth}
+%         \centering
+%         \includegraphics[width=\linewidth]{images/img_gen.png}
+%         \caption{Main testing directory, can see the \texttt{img\_gen.py} script and the different images generated in simulation.}
+%         \label{fig:tex_format}
+%     \end{subfigure}
+%     \caption{Testing methods.}
+%     \label{fig:textures}
+% \end{figure}
 
+% \subsection{Assessment}
 
-
-
-
-\subsection{Assessment}
-
-There are three key areas to assess the raycasters performance:
+The following three metrics were used to evaluate the performance of the raycaster design:
 
 \begin{itemize}
-    \item Speed : ~\ref{fig:speed}
-    The raycaster performs raycasting for the next frame whilst the current frame is being output. When running the raycaster easily manages 60fps, resulting in smooth motion. As you can see from the frame and ray\_done signals in Figure ~\ref{fig:speed}, the raycaster has completed the dda algorithm for all rays of the next frame in about 1/12 the time it takes the frame to be output. This means the hdmi is the bottleneck, not the renderer, and that theoretically, if the hdmi and monitor were modified, the raycaster could support frame-rates up to and abive 600fps.
-    \item Utilisation --- see Figure~\ref{fig:util}
-    Due to the nature of this project and the options to add new features, we sought to minimise resource utilisation wherever we could - to make the leanest, fastest renderer, and leave space for extra features. In the end, the \textbf{whole system} on the PL, including AXI drivers, BRAM controllers etc : summed up to a utilisation of approximately 20\%, this is a testiment to how we developed our own optimised, custom ip blocks.
-    \item Image Quality --- see Figure~\ref{fig:neon}, Figure~\ref{fig:early}, Figure~\ref{fig:sprite}
-    The walls are rendered correctly to look 3D, with no fisheye, and no inconsistencies/breakdowns. 2D 16x16 sprite bitmaps are correctly rendered with occlusions with walls correct. 32x32 wall textures are also correctly rendered.
+    \item \textbf{Latency:} The raycaster uses a double-buffered pipeline; 
+    as shown in Figure~\ref{fig:speed}, DDA traversal completes in 
+    $\frac{1}{12}$ of the HDMI output period, making the display the 
+    throughput bottleneck. At 60 FPS the renderer operates at under $10\%$ 
+    capacity, theoretically supporting $>$600 FPS unconstrained. BRAM state 
+    updates are picked up within one render cycle, giving sub-frame 
+    input-to-display latency.
+
+    \item \textbf{Resource Utilisation} (Figure~\ref{fig:util}): The 
+    complete PL design --- including AXI interconnect, BRAM controllers, 
+    and all custom IP --- totals approximately $20\%$ utilisation.
+
+    \item \textbf{Image Quality} (Figures~\ref{fig:neon},~\ref{fig:early},~\ref{fig:sprite}): 
+    Correct perspective rendering with no fisheye distortion. $16\times16$ 
+    sprites render with correct wall occlusion; $32\times32$ wall textures 
+    are accurately mapped.
 \end{itemize}
 
-\begin{figure}[h]
-    \centering
-    \includegraphics[width=0.8\linewidth]{images/waveform.png}
-    \caption{Simulation Waveform.}
-    \label{fig:speed}
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}
+\begin{axis}[
+    xbar,
+    width=0.9\linewidth,
+    height=5.5cm,
+    bar width=8pt,
+    xmin=0, xmax=100,
+    xlabel={\small Utilisation (\%)},
+    symbolic y coords={MMCM,BUFG,IO,DSP,BRAM,FF,LUTRAM,LUT},
+    ytick=data,
+    tick label style={font=\small},
+    nodes near coords,
+    nodes near coords align={horizontal},
+    every node near coord/.append style={font=\tiny},
+    axis line style={ImperialBlue},
+    tick style={ImperialBlue},
+    bar shift=0pt,
+]
+\addplot[fill=ImperialBlue!70, draw=ImperialBlue] coordinates {
+    (25,MMCM)
+    (13,BUFG)
+    (10,IO)
+    (7,DSP)
+    (5,BRAM)
+    (36,FF)
+    (4,LUTRAM)
+    (22,LUT)
+};
+\end{axis}
+\end{tikzpicture}
+\caption{Post-Implementation Resource Utilisation}
+\label{fig:util}
 \end{figure}
 
-\begin{figure}[h]
-    \centering
-    \includegraphics[width=0.8\linewidth]{images/utilisation.png}
-    \caption{Resource utilisation.}
-    \label{fig:util}
-\end{figure}
+\begin{table}[H]
+\centering
+\small
+\begin{tabularx}{\linewidth}{Xr}
+\toprule
+\rowcolor{ImperialBlue}
+\textcolor{white}{\textbf{Metric}} & \textcolor{white}{\textbf{Value}} \\
+\midrule
+Total On-Chip Power      & 1.982 W \\
+\AltRow Junction Temperature    & 47.9 °C \\
+Thermal Margin           & 37.1 °C (3.1 W) \\
+\AltRow Effective $\theta_{JA}$ & 11.5 °C/W \\
+\bottomrule
+\end{tabularx}
+\caption{Post-Implementation Power Summary}
+\label{tab:power}
+\end{table}
 
-\begin{figure}[h]
-    \centering
-    \includegraphics[width=0.8\linewidth]{images/neon.png}
-    \caption{Textured Wall.}
-    \label{fig:neon}
-\end{figure}
+% \begin{figure}[H]
+%     \centering
+%     \includegraphics[width=0.8\linewidth]{images/waveform.png}
+%     \caption{Simulation Waveform.}
+%     \label{fig:speed}
+% \end{figure}
 
-\begin{figure}[h]
+% \begin{figure}[H]
+%     \centering
+%     \includegraphics[width=0.8\linewidth]{images/utilisation.png}
+%     \caption{Resource utilisation.}
+%     \label{fig:util}
+% \end{figure}
+
+\begin{figure}[H]
     \centering
-    \includegraphics[width=0.8\linewidth]{images/early.png}
+    \includegraphics[width=0.7\linewidth]{images/early.png}
     \caption{Simple 'shaded' walls.}
     \label{fig:early}
 \end{figure}
 
-\begin{figure}[h]
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.6\linewidth]{images/neon.png}
+    \caption{Textured Wall.}
+    \label{fig:neon}
+\end{figure}
+
+\begin{figure}[H]
     \centering
     \includegraphics[width=0.8\linewidth]{images/sprite_occl.png}
     \caption{Sprite Occlusion Example.}

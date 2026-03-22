@@ -1,0 +1,28 @@
+
+
+\vspace
+
+\subsection{Storage and Persistence}
+\label{sec:storage}
+
+Game state flows through a three-tier cache hierarchy (Table~\ref{tab:storage}). Redis holds the live game state that T2 and the monitor poll every tick. At match end, the sidecar promotes event data to DynamoDB for queryable match history. Completed matches are then drained to S3 as compressed replays. The critical constraint is that DynamoDB write latency (5--20\,ms) exceeds the 16.67\,ms tick budget, so all AWS I/O is isolated in the sidecar process.
+
+\begin{table}[H]
+\centering
+\caption{Storage hierarchy: each tier feeds the next.}
+\label{tab:storage}
+\small
+\begin{tabularx}{\columnwidth}{@{}l l l X@{}}
+\toprule
+\textbf{Tier} & \textbf{Service} & \textbf{Latency} & \textbf{Role} \\
+\midrule
+\AltRow
+Hot  & Redis    & $<$1\,ms     & Live state, event queues,\newline Pub/Sub control \\
+Warm & DynamoDB & 5--20\,ms    & Match metadata,\newline player profiles (atomic \texttt{ADD}) \\
+\AltRow
+Cold & S3       & 50--200\,ms  & Compressed NDJSON replays,\newline DDB archives \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+The \textbf{sidecar} (\texttt{sidecar.py}) bridges the tiers: it consumes Redis event queues via \texttt{BRPOP}, writes match records to DynamoDB, streams replay data to S3 via multipart upload (5\,MB gzip parts), and enforces warm-tier retention by archiving old DynamoDB rows to S3. Redis is the boundary: T4 pushes with \texttt{LPUSH}; the sidecar pops asynchronously. At match end, DynamoDB and SNS operations run in a background thread so the \texttt{BRPOP} loop unblocks immediately for the next match.

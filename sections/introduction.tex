@@ -1,16 +1,3 @@
 \section{Introduction}
 %%%this is filler intro
-%%%%read over 
-this is filler intro i, archie, have not read over so could be wrong wong
-Modern multiplayer games rely on tight coupling between rendering, networking, and authoritative state management.  This project explores whether a resource-constrained FPGA can serve as both renderer and network client while an EC2 server maintains canonical game state.
-
-The key contributions are:
-\begin{itemize}[nosep,leftmargin=1.2em]
-    \item A free-running Verilog raycaster producing Wolfenstein-style 3D frames directly in the FPGA fabric (PL).
-    \item A SEDA-pipeline game server with four lock-free threads, achieving a consistent 20\,Hz authoritative tick.
-    \item A three-tier persistence model (Redis $\to$ DynamoDB $\to$ S3) decoupled from the real-time loop via an async Python sidecar.
-\end{itemize}
-
-\begin{designnote}
-Deterministic procedural generation lets us transmit a 32-bit map seed rather than full level data---cutting per-join bandwidth from $\sim$8\,kB to 4\,B.
-\end{designnote}
+ I, archie, feel like abstract does intro well enough . 

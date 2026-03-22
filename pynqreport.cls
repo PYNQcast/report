@@ -4,7 +4,7 @@
 % =================================================
 % BASE CLASS — two-column, compact for 5-page limit
 % =================================================
-\LoadClass[11pt,a4paper,twocolumn]{article}
+\LoadClass[10pt,a4paper,twocolumn]{article}
 
 % =================================================
 % PACKAGES
@@ -90,7 +90,7 @@
         {\large\color{DarkGrey} \@projectsubtitle \par}%
     \fi
     \vspace{0.25cm}%
-    {\small \@author \quad\textcolor{MidGrey}{|}\quad \@institution \quad\textcolor{MidGrey}{|}\quad \@date \par}%
+    {\small \@author \quad\textcolor{MidGrey} \quad \@institution \quad\textcolor{MidGrey}{|}\quad \@date \par}%
     \vspace{0.3cm}%
     {\color{ImperialBlue}\rule{\textwidth}{0.4pt}}%
 \end{center}%

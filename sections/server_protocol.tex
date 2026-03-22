@@ -1,0 +1,33 @@
+% sections/02_protocol.tex
+\subsection{Wire Protocol}
+\label{sec:protocol}
+
+All packets are custom fixed-size \texttt{struct}-packed datagrams with no variable-length fields on the hot path. For example, the 24-byte \texttt{NodePacket} (\texttt{<HHIfffB3x>}, Table~\ref{tab:nodepacket}) is transmitted once per tick, little-endian native on both ARM Cortex-A9 and x86-64. Aside from other packets, the server broadcasts a 68\,B \texttt{PKT\_GAME\_STATE}  each tick, and a 1032\,B \texttt{PKT\_MAP} once at match start to program the FPGA BRAM.
+
+
+
+%%%%%%%%
+\begin{table}[H]
+\centering
+\caption{\texttt{NodePacket}: 24-byte fixed binary frame.}
+\label{tab:nodepacket}
+\small
+\begin{tabularx}{\columnwidth}{@{}c c l l X@{}}
+\toprule
+\textbf{Off} & \textbf{Size} & \textbf{Type} & \textbf{Field} & \textbf{Purpose} \\
+\midrule
+\AltRow
+0  & 2\,B & \texttt{u16} & \texttt{node\_id}  & Source identity \\
+2  & 2\,B & \texttt{u16} & \texttt{seq}       & Monotonic counter \\
+\AltRow
+4  & 4\,B & \texttt{u32} & \texttt{tick}      & Server tick stamp \\
+8  & 4\,B & \texttt{f32} & \texttt{x}         & World X \\
+\AltRow
+12 & 4\,B & \texttt{f32} & \texttt{y}         & World Y \\
+16 & 4\,B & \texttt{f32} & \texttt{angle}     & Heading (rad) \\
+\AltRow
+20 & 1\,B & \texttt{u8}  & \texttt{flags}     & Input bitmask \\
+21 & 3\,B & ---           & \texttt{pad}       & Alignment (\texttt{3x}) \\
+\bottomrule
+\end{tabularx}
+\end{table}

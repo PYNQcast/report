@@ -1,67 +1,69 @@
 \subsection{HDMI Output Protocol}
 
-The standard PYNQ video overlay drives the display through a
-\textit{Video Direct Memory Access} (VDMA) engine: the PS renders a
-complete frame into a DDR3 framebuffer, the VDMA DMA-transfers it into
-an AXI4-Stream, and a \textit{Video Timing Controller} (VTC) clocks it
-through \textit{AXI4-Stream to Video Out} and \textit{RGB-to-DVI} to
-the HDMI port. Every pixel therefore traverses the PS $\rightarrow$
-DDR $\rightarrow$ PL path before reaching the display.
+% The default PYNQ video overlay routes every pixel through DDR3. The PS
+% writes a complete frame into SDRAM, a VDMA engine reads it back over
+% the AXI bus, and the VTC clocks it through AXI4-Stream to Video Out
+% and RGB-to-DVI to the display. Buffering a full 480p frame costs
+% $640 \times 480 \times 3 = \mathbf{900\,\text{kB}}$ of SDRAM per
+% frame, and at 60\,fps the VDMA alone consumes $\mathbf{54\,\text{MB/s}}$
+% of AXI bandwidth just to keep the display fed.
 
-\vspace{0.5em}
+% A general-purpose game engine must allow any PL rendering block to
+% drive the display directly, without PS involvement or memory
+% allocation. The VDMA breaks this in two ways. First, frame rate
+% becomes coupled to PS scheduling: network interrupts, game logic, and
+% Python overhead all compete with the DMA transfer, producing variable
+% frame timing. Second, the display can scan out a frame while the PS is
+% still writing the next one into the same buffer, causing tearing where
+% the top and bottom halves of the screen show different frames. Neither
+% is acceptable in a real-time multiplayer context.
 
-This architecture is incompatible with a free-running hardware
-raycaster. The VDMA expects a complete, PS-written framebuffer before
-each transfer, the DDA engine produces pixels \textit{in column order
-at PL clock rate}, with no ARM involvement. Inserting a framebuffer
-would require the PS to stall the raycaster, copy $320 \times 240
-\times 3 = \mathbf{225\,\text{kB}}$ to DDR, and signal the VDMA,
-adding one full frame of latency ($\sim$16.7\,ms at 60\,fps) and
-consuming AXI bandwidth that is shared with the network stack.
+% The VDMA is removed entirely. The raycaster AXI-Stream output is
+% connected directly into \texttt{v\_axi4s\_vid\_out\_0}, with the VTC
+% and RGB-to-DVI IP retained. Figure~\ref{fig:hdmi-compare} shows the
+% two pipelines side by side. The key insight is that the VTC is a
+% hardware counter driven by a fixed pixel clock: it is physically
+% incapable of producing an inconsistent frame rate regardless of what
+% the PS is doing. There is no shared framebuffer, so there is no
+% surface for tearing to occur on. Any future rendering block, whether a
+% sprite engine, a tile renderer, or a different 3D algorithm, can be
+% substituted into the same pipeline and drive the display without
+% modifying the PS at all.
 
-\vspace{0.5em}
+The default PYNQ video overlay routes every pixel through DDR3: the PS
+writes a complete frame into SDRAM, a VDMA engine reads it back over AXI,
+and the VTC clocks it through AXI4-Stream to Video Out and RGB-to-DVI.
+Buffering a full 480p frame costs $640 \times 480 \times 3 =
+\mathbf{900\,\text{kB}}$ per frame; at 60\,fps the VDMA alone consumes
+$\mathbf{54\,\text{MB/s}}$ of AXI bandwidth.
 
-Instead, the raycaster AXI-Stream is connected directly to
-\texttt{v\_axi4s\_vid\_out\_0}, with the VTC providing the pixel clock
-and sync signals and the RGB-to-DVI IP serialising the output to TMDS,
-as shown in Figure~\ref{fig:hdmi-block}. The VDMA is removed entirely.
-Pixels flow raycaster $\rightarrow$ AXI-Stream $\rightarrow$ Video Out
-$\rightarrow$ TMDS without any intermediate memory transaction.
+This introduces two problems in a real-time multiplayer context. Frame
+rate becomes coupled to PS scheduling, where network interrupts, game
+logic, and Python overhead compete with the DMA transfer. The display can
+also scan out a frame while the PS is still writing the next one into the
+same buffer, causing tearing.
+
+Both are eliminated by removing the VDMA entirely and connecting the
+raycaster AXI-Stream output directly into \texttt{v\_axi4s\_vid\_out\_0},
+retaining only the VTC and RGB-to-DVI IP. Since the VTC is a hardware
+counter driven by a fixed pixel clock, frame rate is decoupled from PS
+activity entirely. With no shared framebuffer, tearing has no surface to
+occur on. Figure~\ref{fig:hdmi-compare} shows the two pipelines.
 
 \begin{figure}[H]
     \centering
-    \includegraphics[width=\columnwidth]{images/vivado_hdmi_block.png}
-    \caption{VDMA-free video pipeline: raycaster pixel stream feeds
-             directly into AXI4-Stream to Video Out, bypassing DDR.}
-    \label{fig:hdmi-block}
+    \includegraphics[width=0.3\textwidth]{images/hdmi_pipeline_comparison.png}
+    \caption{Standard PYNQ overlay (left) vs.\ VDMA-free pipeline
+             (right)}
+    \label{fig:hdmi-compare}
 \end{figure}
 
-The hardware consequences of removing the VDMA are:
-
-\begin{itemize}
-    \item \textbf{Latency:} End-to-end pixel latency drops from one
-    full frame ($\sim$16.7\,ms) to the AXI handshake delay
-    ($<1\,\mu$s)
-
-    \item \textbf{AXI bandwidth:} The DDR bus is no longer saturated
-    by display transfers. At 60\,fps the VDMA would consume
-    $225\,\text{kB} \times 60 \approx \mathbf{13\,\text{MB/s}}$ of
-    AXI bandwidth; this is now fully available to the PS for UDP
-    packet handling and game-state writes to BRAM.
-
-    \item \textbf{PS load:} The ARM core is relieved of all DMA
-    descriptor management and framebuffer allocation. The game loop
-    writes only a 34-byte state packet to BRAM each tickrather than a full rendered frame.
-\end{itemize} 
-
-The two \texttt{proc\_sys\_reset} instances and the \textit{Clocking
-Wizard} remain from the original pipeline to manage the AXI and pixel
-clock domains correctly, no additional clock-domain crossings were
-introduced.
-
-\paragraph{Resource cost:}
-The VDMA-free pipeline consumes no additional BRAM or LUTs relative to
-the stock Xilinx video stack, the savings are in DDR bandwidth and PS
-cycles rather than PL fabric. The VTC, AXI4S-to-Video-Out, and
-RGB-to-DVI IPs retain their original footprint
-($\sim$1\,800 LUTs, 0 BRAM tiles for the video path alone).
+\paragraph{Benefits and resource cost:}
+End-to-end pixel latency falls from $\mathbf{16.7\,\text{ms}}$ to under
+$\mathbf{1\,\mu\text{s}}$, and the 54\,MB/s AXI bandwidth is fully
+recovered for PS network and game-state threads. Frame rate is
+hardware-locked to the VTC pixel clock, eliminating stuttering and
+tearing, while the ARM core is reduced to writing a single game-state
+packet to BRAM each tick. The saving is in bandwidth and PS cycles rather
+than PL fabric: the retained VTC, AXI4S-to-Video-Out, and RGB-to-DVI IPs
+occupy approximately 1,800\,LUTs and zero BRAM tiles.

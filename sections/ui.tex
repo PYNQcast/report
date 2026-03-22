@@ -1,82 +1,150 @@
 \subsection{UI Overlay}
 
-Rather than hard-coding a fixed HUD, the overlay is exposed as a
-general-purpose compositing layer. This was a deliberate design choice to
-position the system as a reusable game engine rather than a
-single-game raycaster. Any application layer can define its own
-screen regions as the hardware enforces no assumptions about what is
-drawn where.
+% The overlay system is designed as a general-purpose compositing layer
+% so that any game running on the engine can define its own screen
+% elements by writing register values from the PS at startup, with no
+% bitstream changes required. 
 
-\vspace{0.5em}
+% % It was developed and tested independently
+% % of the raycaster using a makeshift video stream to isolate and benchmark
+% % the overlay logic before integrating it into the full pipeline. This
+% % allowed timing issues with the combined system to be identified cleanly. 
 
-The overlay pipeline inserts itself in the AXI-Stream between the
-raycaster output and the HDMI encoder. At each pixel clock cycle it
-receives the current beam coordinates $(x, y)$ from the video timing
-controller and selects the output colour according to a strict
-priority hierarchy:
+% The overlay currently operates as a standalone module rather than
+% inline with the raycaster output, a known limitation left for future
+% integration work.
 
-\begin{keyequation}
-\[
-\text{pixel}_{\text{out}} =
-\begin{cases}
-C_{\text{sprite}}(x,y) & \text{if } (x,y) \in R_{\text{sprite}} \\
-C_{\text{glyph}}(x,y)  & \text{if } (x,y) \in R_{\text{text}}   \\
-C_{\text{bar}}         & \text{if } (x,y) \in R_{\text{bar}}    \\
-C_{\text{ray}}(x,y)    & \text{otherwise}
-\end{cases}
-\]
-\end{keyequation}
+% \vspace{0.5em}
 
-Each region $R$ is defined by a pair of axis-aligned bounding boxes
-written to AXI-Lite registers by the PS at startup. Because the
-decision resolves in a single clock cycle, with no memory transactions
-on the critical path, the overlay adds \textbf{zero pipeline stages}
-and consumes no additional BRAM beyond the glyph ROM.
+% The system consists of three compositing IPs chained in the pixel
+% stream, each operating fully in the clock domain of the display output
+% at 74.25\,MHz: the textbox IP, the text overlay IP, and the fill bar
+% logic.
 
-\vspace{0.5em}
+% \subsubsection*{Textbox IP}
 
-Text rendering uses a $760 \times 8$ BRAM-backed glyph ROM covering
-the full 95-character printable ASCII set. For a character at grid
-position $(c_x, c_y)$ the ROM address is:
+% Eight textbox slots are defined entirely in AXI-Lite flip-flop
+% registers — no memory required. Each slot stores position, size,
+% background colour, outline colour, and outline thickness. On every
+% pixel clock cycle the logic evaluates all eight slots in parallel,
+% performing four comparisons per slot to test whether the current beam
+% position falls inside the bounding rectangle and four further
+% comparisons to test whether it falls within the outline border. A
+% priority mux scans from highest to lowest slot and outputs the first
+% match, passing the background pixel through unchanged if no slot
+% claims the position. The computation is fully combinatorial with a
+% single register stage to latch the result, giving one cycle of
+% pipeline latency.
 
-\begin{keyequation}
-\[
-\text{addr} = \bigl(\text{ASCII}(c) - 32\bigr) \times 8
-              + \bigl(y - c_y \cdot 8\bigr)
-\]
-\end{keyequation}
+% \subsubsection*{Text overlay and glyph ROM}
 
-and the pixel colour is gated by bit $\bigl(x - c_x \cdot 8\bigr)$
-of the returned byte, giving a 1-cycle-per-pixel throughput with no
-stalls.
+% The font is stored in a dual-port BRAM as 1,536 bytes covering 96
+% printable ASCII characters. Each character occupies 16 consecutive
+% bytes — one per row of the $8 \times 16$ pixel grid — with each bit
+% representing one pixel column. The ARM writes the font bitmap into
+% BRAM once over AXI at startup.
 
-\vspace{0.5em}
+% \vspace{0.5em}
 
-A proof-of-concept sprite layer was implemented alongside the text
-renderer to validate the extension path: a $16 \times 16$ icon is
-loaded into a dedicated BRAM region at boot and composited at a
-PS-configurable screen coordinate. The same mechanism generalises to
-arbitrary sprite sheets where a wider AXI-Lite register map could expose
-multiple independently-positioned sprites at runtime without modifying
-the core pipeline.
+% Sixteen text slots are defined in registers, each holding a screen
+% position, a text colour, a character count, and up to 32 characters
+% packed four per 32-bit word. When the beam falls within a text slot's
+% character grid, the hardware computes the BRAM address and bit index
+% directly from the beam position:
 
-\begin{figure}[H]
-    \centering
-    % TODO: screenshot of game running with HUD overlaid, or pipeline
-    % block diagram showing pixel-mux between raycaster / glyph ROM /
-    % bar logic / sprite BRAM
-    \fbox{\parbox{0.85\columnwidth}{\centering\vspace{2em}
-        \textit{[Figure placeholder: annotated screenshot showing an example UI]}
-    \vspace{2em}}}
-    \caption{UI overlay: pixel-clock-domain compositing over raycasted frame.}
-    \label{fig:ui-overlay}
-\end{figure}
+% \begin{keyequation}
+% \begin{align*}
+% \text{addr} &= \bigl(\text{ASCII}(c) - 32\bigr) \times 16 + \bigl(\text{vcount} \bmod 16\bigr) \\[4pt]
+% \text{bit}  &= \text{hcount} \bmod 8
+% \end{align*}
+% \end{keyequation}
 
-\paragraph{Resource cost:}
-The entire overlay (region comparators, glyph ROM, sprite BRAM, and
-pixel mux) consumes ~180 LUTs and 1 BRAM tile
-(36\,Kb). This is substantially cheaper than a software alternative:
-blitting a $320 \times 240$ framebuffer from the PS would transfer
-$\sim$75\,kB per frame, consuming $\sim$36\,MB/s of AXI bandwidth at
-60\,fps and competing directly with the network and game-loop threads.
-The PL overlay eliminates that cost entirely.
+% If the selected bit is set, the pixel is replaced with the slot text
+% colour; otherwise the background passes through. Figure~\ref{fig:glyph-rom}
+% shows this three-stage process for character `A' at row~5.
+
+% % \begin{figure}[H]
+% %     \centering
+% %     \includegraphics[width=\columnwidth]{images/glyph_rom.png}
+% %     \caption{Glyph ROM addressing for `A' (ASCII\,65) at scan row~5.
+% %              Step~1: the $8\times16$ glyph with the active row
+% %              highlighted. Step~2: address 533 is fetched from BRAM,
+% %              returning \texttt{0xFF}. Step~3: bit~2, selected by the
+% %              column position, gates the pixel output.}
+% %     \label{fig:glyph-rom}
+% % \end{figure}
+
+% The font BRAM is also used for sprite rendering. Custom bitmaps can
+% be uploaded by the PS at runtime and composited at configurable screen
+% coordinates, with pixel colours resolved against a register-backed
+% colour table rather than a single text colour. This extends the same
+% one-cycle-per-pixel path to arbitrary tile graphics without additional
+% memory infrastructure.
+
+% \subsubsection*{Fill bars}
+
+% Fill bars follow the same per-pixel evaluation principle but without
+% any BRAM lookup. Each bar is a filled rectangle where the fill width
+% is computed each cycle as a fraction of the total bar width scaled by
+% a 0--100 percent value written from software:
+
+% \begin{keyequation}
+% \[
+% x_{\text{fill}} = x_{\text{origin}} + \left\lfloor
+%     \frac{\text{fill\%} \times w_{\text{bar}}}{100}
+% \right\rfloor
+% \]
+% \end{keyequation}
+
+% Pixels to the left of $x_{\text{fill}}$ receive the fill colour;
+% pixels to the right pass through unchanged.
+
+% % \begin{figure}[H]
+% %     \centering
+% %     \fbox{\parbox{0.85\columnwidth}{\centering\vspace{2em}
+% %         \textit{[Figure placeholder: photograph of the overlay system
+% %         running on the PYNQ, showing textboxes, rendered text, and a
+% %         fill bar composited over the test video stream.]}
+% %     \vspace{2em}}}
+% %     \caption{UI overlay operating on a standalone test stream, used
+% %              to isolate and verify the compositing pipeline before
+% %              integration.}
+% %     \label{fig:ui-photo}
+% % \end{figure}
+
+% \paragraph{Resource cost.}
+% The three compositing IPs together consume approximately 180\,LUTs
+% and 1\,BRAM tile. A software equivalent requiring the PS to blit
+% overlay elements each frame at 480p would consume
+% $\sim$54\,MB/s of AXI bandwidth and couple update rate to ARM thread
+% scheduling. The PL overlay composites every element in lockstep with
+% the pixel clock, guaranteeing zero-tearing output at negligible
+% hardware cost.
+
+The overlay is a general-purpose compositing layer configurable entirely 
+via PS register writes at startup, requiring no bitstream changes between 
+games. Three IPs are chained in the pixel stream at 74.25\,MHz:
+
+\begin{itemize}
+    \item \textbf{Textbox IP:} Eight slots in AXI-Lite registers storing 
+    position, size, and colours. All eight are evaluated in parallel each 
+    pixel clock via fully combinatorial logic with one cycle of pipeline 
+    latency.
+
+    \item \textbf{Text overlay:} A 1,536-byte glyph ROM in BRAM covers 96 
+    ASCII characters in an $8\times16$ grid. BRAM address and bit index are 
+    computed directly from beam position using the expressions in 
+    Equation~\ref{eq:glyph}. The same BRAM doubles as a sprite tile store 
+    for runtime-uploaded bitmaps.
+
+    \item \textbf{Fill bars:} Per-pixel filled rectangles with fill width 
+    computed each cycle from a 0--100\% register value --- no BRAM lookup 
+    required.
+\end{itemize}
+
+Together the three IPs consume approximately 180\,LUTs and 1\,BRAM tile. 
+A software equivalent blitting at 480p would consume $\sim$54\,MB/s of AXI 
+bandwidth; the PL implementation composites in lockstep with the pixel 
+clock at negligible hardware cost. The overlay currently operates as a 
+standalone module; inline integration with the raycaster is left as future 
+work.

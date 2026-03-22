@@ -1,9 +1,11 @@
 \documentclass{pynqreport}
 
 % ─── METADATA ─────────────────────────────────────
-\title{Raycasting Game Engine on PYNQ FPGA with Cloud-(Enabled/Relayed) Multi-Player}
-\projectsubtitle{ or FPGA-Accelerated Raycasting Game Engine with Cloud-Based Multiplayer}
+\title{PYNQcast: A Cloud-Hosted Development and Multiplayer Platform for Raycasting Games on FPGA}
+
 \author{A.\ Kendall \quad \textbar \quad A.\ Shah \quad \textbar \quad A.\ Tariq \quad \textbar \quad L.\ Butler-Cassar \quad \textbar \quad L.\ Canning \quad \textbar \quad N.\ Himaz \quad \textbar \quad S.\ Osebeyo \hspace{0.5cm}}
+
+\raggedbottom
 
 \institution{Imperial College London}
 \date{March 2026}
@@ -15,13 +17,21 @@
 \maketitle
 
 \input{sections/abstract}
-\input{sections/introduction}
+
+
+% \input{sections/introduction}
 \input{sections/architecture}
 \input{sections/raycaster}
 \input{sections/ui}
 \input{sections/hdmi}
-\input{sections/networking}
-\input{sections/results}
+
+\input{sections/server_architect}
+\input{sections/server_protocol}
+\input{sections/server_storage}
+\input{sections/server_monitor}
+\input{sections/server_eval}
+
+
 \input{sections/conclusion}
 \input{sections/references}
 
